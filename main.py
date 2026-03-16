@@ -28,9 +28,12 @@ class TradingBot:
         self._running = False
         self._trade_repo = TradeRepository(APP_CONFIG.db_path)
         self._last_ensemble_result = None
+        self._last_retrain_time = time.time()
 
         self._binance_client = BinanceClient(BINANCE_CONFIG)
-        self._data_fetcher = DataFetcher(self._binance_client, TRADING_CONFIG)
+        self._data_fetcher = DataFetcher(
+            self._binance_client, TRADING_CONFIG, binance_config=BINANCE_CONFIG
+        )
         self._sma_strategy = SmaCrossoverStrategy(
             short_period=TRADING_CONFIG.sma_short_period,
             long_period=TRADING_CONFIG.sma_long_period,
@@ -76,6 +79,7 @@ class TradingBot:
         try:
             while self._running:
                 self._tick()
+                self._check_retrain()
                 self._print_dashboard()
                 time.sleep(APP_CONFIG.dashboard_refresh_seconds)
         except KeyboardInterrupt:
@@ -85,17 +89,35 @@ class TradingBot:
 
     def _init_lstm(self) -> None:
         """Inicializa el modelo LSTM (carga o entrena)."""
+        self._retrain_lstm(first_time=True)
+
+    def _retrain_lstm(self, first_time: bool = False) -> None:
+        """Entrena o re-entrena el modelo LSTM con datos frescos."""
+        action = "Entrenando" if first_time else "Re-entrenando"
+        logger.info("%s modelo LSTM con datos frescos...", action)
         historical_fetcher = HistoricalDataFetcher(
             self._binance_client, TRADING_CONFIG
         )
         trainer = ModelTrainer(
             self._lstm_predictor, historical_fetcher, LSTM_CONFIG
         )
-        success = trainer.train_or_load()
+        success = trainer.train_or_load() if first_time else trainer.train()
+        self._last_retrain_time = time.time()
         if success:
-            logger.info("Modelo LSTM listo")
+            logger.info("Modelo LSTM listo (accuracy actualizado)")
         else:
             logger.warning("LSTM no disponible, operando solo con SMA")
+
+    def _check_retrain(self) -> None:
+        """Re-entrena el LSTM si pasó el intervalo configurado."""
+        elapsed = time.time() - self._last_retrain_time
+        interval_seconds = LSTM_CONFIG.retrain_interval_minutes * 60
+        if elapsed >= interval_seconds:
+            logger.info(
+                "Re-entrenamiento programado (cada %d min)",
+                LSTM_CONFIG.retrain_interval_minutes,
+            )
+            self._retrain_lstm()
 
     def stop(self) -> None:
         """Detiene el bot de forma ordenada."""
@@ -108,11 +130,11 @@ class TradingBot:
         try:
             data_limit = max(
                 TRADING_CONFIG.sma_long_period + 10,
-                LSTM_CONFIG.sequence_length + 20,
+                LSTM_CONFIG.sequence_length + 100,
             )
-            prices, volumes = self._data_fetcher.get_closing_prices_and_volumes(
-                limit=data_limit
-            )
+            ohlcv = self._data_fetcher.get_ohlcv(limit=data_limit)
+            prices = ohlcv["closes"]
+            volumes = ohlcv["volumes"]
             if not prices:
                 logger.warning("No se pudieron obtener precios")
                 return
@@ -124,9 +146,28 @@ class TradingBot:
             # Verificar stop-loss / take-profit
             self._order_manager.check_stop_loss_take_profit(current_price)
 
-            # Analizar con ensemble (SMA + LSTM)
-            ensemble_result = self._ensemble.analyze(prices, volumes)
+            # Analizar con ensemble (SMA + LSTM) usando datos OHLCV completos
+            ensemble_result = self._ensemble.analyze(
+                prices, volumes,
+                highs=ohlcv["highs"],
+                lows=ohlcv["lows"],
+            )
             self._last_ensemble_result = ensemble_result
+
+            # Log de cada tick para monitoreo
+            lstm_info = ""
+            if ensemble_result.lstm_prediction:
+                lp = ensemble_result.lstm_prediction
+                lstm_info = f" | LSTM: {lp.direction.value} ({lp.confidence:.1%})"
+            logger.info(
+                "%s=$%.2f | SMA=%s%s | DECISION=%s",
+                TRADING_CONFIG.symbol,
+                current_price,
+                ensemble_result.sma_result.signal.value,
+                lstm_info,
+                ensemble_result.final_signal.value,
+            )
+
             self._order_manager.process_signal(
                 ensemble_result.final_signal, current_price
             )

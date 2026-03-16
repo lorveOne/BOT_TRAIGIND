@@ -28,12 +28,14 @@ class TradingConfig:
 
     symbol: str = "EURUSDT"
     interval: str = "15m"
-    sma_short_period: int = 7
-    sma_long_period: int = 21
+    sma_short_period: int = 20
+    sma_long_period: int = 50
     stop_loss_pct: float = 0.008
     take_profit_pct: float = 0.015
-    position_size_pct: float = 0.95
-    dry_run: bool = False
+    position_size_pct: float = 0.30
+    dry_run: bool = field(
+        default_factory=lambda: os.environ.get("DRY_RUN", "true").lower() != "false"
+    )
     # Trailing stop-loss: cuando sube X%, mover SL al precio de entrada (break-even)
     break_even_pct: float = 0.005  # +0.5% activa break-even (SL = entrada)
     # Trailing: SL sigue al precio a esta distancia
@@ -69,7 +71,7 @@ class LstmConfig:
     num_layers: int = 2
     epochs: int = 20
     batch_size: int = 32
-    confidence_threshold: float = 0.01
+    confidence_threshold: float = 0.55
     training_candles: int = 10000  # ~3.5 días de velas de 5m
     model_dir: str = str(BASE_DIR / "models" / "trained")
     retrain_on_startup: bool = False

@@ -88,7 +88,7 @@ def run_pair_bot(symbol: str, client: BinanceClient, trade_repo: TradeRepository
         dry_run=TRADING_CONFIG.dry_run,
     )
 
-    fetcher = DataFetcher(client, pair_config)
+    fetcher = DataFetcher(client, pair_config, binance_config=BINANCE_CONFIG)
     sma = SmaCrossoverStrategy(pair_config.sma_short_period, pair_config.sma_long_period)
 
     lstm_model_dir = os.path.join(LSTM_CONFIG.model_dir, symbol)
@@ -103,11 +103,16 @@ def run_pair_bot(symbol: str, client: BinanceClient, trade_repo: TradeRepository
         training_candles=LSTM_CONFIG.training_candles,
         model_dir=lstm_model_dir,
         retrain_on_startup=LSTM_CONFIG.retrain_on_startup,
+        retrain_interval_minutes=LSTM_CONFIG.retrain_interval_minutes,
     )
 
     lstm = LstmPredictor(lstm_config)
     ensemble = EnsembleStrategy(sma, lstm, lstm_config.confidence_threshold)
     order_mgr = OrderManager(client, trade_repo, pair_config)
+
+    # Restaurar posición abierta si existe en la DB
+    if order_mgr.restore_open_position():
+        logger.info("[%s] Posición abierta restaurada desde DB", symbol)
 
     # Entrenar LSTM
     if lstm_config.enabled:
@@ -122,15 +127,28 @@ def run_pair_bot(symbol: str, client: BinanceClient, trade_repo: TradeRepository
     fetcher.start_price_stream()
     time.sleep(3)
 
+    last_retrain_time = time.time()
     logger.info("[%s] Bot iniciado", symbol)
 
     while global_state["running"]:
         try:
+            # Re-entrenar LSTM periódicamente
+            elapsed = time.time() - last_retrain_time
+            if elapsed >= lstm_config.retrain_interval_minutes * 60:
+                logger.info("[%s] Re-entrenando LSTM...", symbol)
+                hist_fetcher = HistoricalDataFetcher(client, pair_config)
+                trainer = ModelTrainer(lstm, hist_fetcher, lstm_config)
+                trainer.train()
+                last_retrain_time = time.time()
+                logger.info("[%s] Re-entrenamiento completado", symbol)
+
             data_limit = max(
                 pair_config.sma_long_period + 10,
-                lstm_config.sequence_length + 40,
+                lstm_config.sequence_length + 100,
             )
-            prices, volumes = fetcher.get_closing_prices_and_volumes(data_limit)
+            ohlcv = fetcher.get_ohlcv(data_limit)
+            prices = ohlcv["closes"]
+            volumes = ohlcv["volumes"]
             if not prices:
                 time.sleep(5)
                 continue
@@ -140,7 +158,11 @@ def run_pair_bot(symbol: str, client: BinanceClient, trade_repo: TradeRepository
                 current_price = prices[-1]
 
             order_mgr.check_stop_loss_take_profit(current_price)
-            result = ensemble.analyze(prices, volumes)
+            result = ensemble.analyze(
+                prices, volumes,
+                highs=ohlcv["highs"],
+                lows=ohlcv["lows"],
+            )
             order_mgr.process_signal(result.final_signal, current_price)
 
             trades_list = []
@@ -265,7 +287,7 @@ body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI',monospace;padding:1
 <body>
 <div class="header">
     <h1>TRADING BOT MULTI-PAR</h1>
-    <div class="sub">BTC + ORO + EUR | SMA + LSTM Neural Network | Binance Testnet</div>
+    <div class="sub">BTC + ORO + EUR | BiLSTM+Attention (16 features) | Binance LIVE | 5min</div>
 </div>
 
 <div class="global">

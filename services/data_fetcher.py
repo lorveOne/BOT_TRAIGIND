@@ -18,10 +18,14 @@ class DataFetcher:
     """Gestiona la obtención de datos de mercado."""
 
     def __init__(
-        self, binance_client: BinanceClient, trading_config: TradingConfig
+        self,
+        binance_client: BinanceClient,
+        trading_config: TradingConfig,
+        binance_config: Optional["BinanceConfig"] = None,
     ) -> None:
         self._client = binance_client
         self._config = trading_config
+        self._binance_config = binance_config
         self._current_price: float = 0.0
         self._price_lock = threading.Lock()
         self._twm: Optional[ThreadedWebsocketManager] = None
@@ -58,13 +62,35 @@ class DataFetcher:
         volumes = [float(k[5]) for k in klines]
         return closes, volumes
 
+    def get_ohlcv(
+        self, limit: int = 100
+    ) -> dict[str, list[float]]:
+        """Obtiene datos OHLCV completos de las últimas velas."""
+        klines = self._client.get_klines(
+            symbol=self._config.symbol,
+            interval=self._config.interval,
+            limit=limit,
+        )
+        return {
+            "opens": [float(k[1]) for k in klines],
+            "highs": [float(k[2]) for k in klines],
+            "lows": [float(k[3]) for k in klines],
+            "closes": [float(k[4]) for k in klines],
+            "volumes": [float(k[5]) for k in klines],
+        }
+
     def start_price_stream(self) -> None:
         """Inicia el WebSocket para recibir precios en tiempo real."""
         try:
+            use_testnet = self._binance_config.testnet if self._binance_config else False
             self._twm = ThreadedWebsocketManager(
                 api_key=self._client.client.API_KEY,
                 api_secret=self._client.client.API_SECRET,
-                testnet=True,
+                testnet=use_testnet,
+            )
+            logger.info(
+                "WebSocket iniciado en modo %s",
+                "TESTNET" if use_testnet else "REAL",
             )
             self._twm.start()
 

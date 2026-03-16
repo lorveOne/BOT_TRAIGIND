@@ -3,6 +3,7 @@
 import math
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 from config.settings import TradingConfig
@@ -100,14 +101,51 @@ class OrderManager:
         if not self._check_trade_rate_limit():
             return None
 
+        # Protección: límite de pérdida diaria
+        if not self._check_daily_loss_limit():
+            return None
+
         if signal == Signal.BUY and not self.has_position:
             return self._open_position(current_price)
-        elif signal == Signal.SELL and self.has_position:
-            return self._close_position(current_price, reason="Señal SELL")
-        # Deshabilitada la venta automática de balances existentes.
-        # Esta función causó ventas en bucle destructivas.
-        # Solo se vende balance existente cuando hay una posición tracked.
+        elif signal == Signal.SELL:
+            # PROTECCIÓN CRÍTICA: solo vender si hay posición tracked por el bot
+            if self.has_position:
+                return self._close_position(current_price, reason="Señal SELL")
+            else:
+                logger.warning(
+                    "SELL bloqueado: no hay posición tracked. "
+                    "El bot solo vende lo que él mismo compró."
+                )
+                return None
         return None
+
+    def _check_daily_loss_limit(self) -> bool:
+        """Verifica que la pérdida diaria no supere el máximo configurado."""
+        if self._config.max_daily_loss_usdt <= 0:
+            return True
+
+        try:
+            today_start = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).isoformat()
+            trades_today = self._repo.find_all(self._config.symbol, limit=100)
+            daily_pnl = sum(
+                t.pnl for t in trades_today
+                if t.pnl is not None and t.timestamp >= today_start
+            )
+
+            if daily_pnl <= -self._config.max_daily_loss_usdt:
+                logger.warning(
+                    "DAILY LOSS LIMIT alcanzado: pérdida hoy = $%.2f "
+                    "(máximo permitido: $%.2f). Trading bloqueado.",
+                    abs(daily_pnl),
+                    self._config.max_daily_loss_usdt,
+                )
+                return False
+        except Exception as e:
+            logger.error("Error al verificar daily loss limit: %s", e)
+
+        return True
 
     def _check_trade_rate_limit(self) -> bool:
         """Verifica que no se exceda el límite de operaciones por hora."""
@@ -290,6 +328,9 @@ class OrderManager:
 
     def _open_position(self, price: float) -> Optional[Trade]:
         """Abre una nueva posición de compra usando quoteOrderQty."""
+        if self._config.dry_run:
+            logger.info("[DRY-RUN] Modo simulación activo - no se ejecutarán órdenes reales")
+
         balance = self._client.get_account_balance("USDT")
 
         # Protección: no operar con balance insuficiente
