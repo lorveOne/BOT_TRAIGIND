@@ -26,6 +26,7 @@ class EnsembleStrategy:
     Reglas:
     - Si SMA y LSTM coinciden (con confianza >= threshold) -> ejecutar señal
     - Si no coinciden -> HOLD (conservador)
+    - Si LSTM tiene alta confianza (>= high_confidence) -> LSTM actúa solo
     - Si LSTM no está listo -> usar solo SMA como fallback
     """
 
@@ -34,10 +35,12 @@ class EnsembleStrategy:
         sma_strategy: SmaCrossoverStrategy,
         lstm_predictor: LstmPredictor,
         confidence_threshold: float = 0.70,
+        high_confidence_threshold: float = 0.70,
     ) -> None:
         self._sma = sma_strategy
         self._lstm = lstm_predictor
         self._threshold = confidence_threshold
+        self._high_confidence = high_confidence_threshold
 
     def analyze(
         self, prices: list[float], volumes: list[float]
@@ -63,6 +66,20 @@ class EnsembleStrategy:
             )
 
         lstm_pred = self._lstm.predict(prices, volumes)
+
+        # LSTM con alta confianza puede actuar solo, incluso si SMA=HOLD
+        if lstm_pred.confidence >= self._high_confidence:
+            reason = (
+                f"LSTM alta confianza: {lstm_pred.direction.value} "
+                f"({lstm_pred.confidence:.1%}) -> {lstm_pred.direction.value}"
+            )
+            logger.info(reason)
+            return EnsembleResult(
+                final_signal=lstm_pred.direction,
+                sma_result=sma_result,
+                lstm_prediction=lstm_pred,
+                reason=reason,
+            )
 
         if sma_result.signal == Signal.HOLD:
             return EnsembleResult(

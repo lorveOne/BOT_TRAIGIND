@@ -142,10 +142,18 @@ class TestEnsembleStrategy(unittest.TestCase):
         result = self.ensemble.analyze(self.prices, self.volumes)
         self.assertEqual(result.final_signal, Signal.SELL)
 
-    def test_disagree_returns_hold(self):
+    def test_disagree_high_confidence_lstm_wins(self):
         self.mock_sma.analyze.return_value = self._sma_result(Signal.BUY)
         self.mock_lstm.is_ready.return_value = True
         self.mock_lstm.predict.return_value = self._lstm_prediction(Signal.SELL, 0.85)
+
+        result = self.ensemble.analyze(self.prices, self.volumes)
+        self.assertEqual(result.final_signal, Signal.SELL)
+
+    def test_disagree_low_confidence_returns_hold(self):
+        self.mock_sma.analyze.return_value = self._sma_result(Signal.BUY)
+        self.mock_lstm.is_ready.return_value = True
+        self.mock_lstm.predict.return_value = self._lstm_prediction(Signal.SELL, 0.30)
 
         result = self.ensemble.analyze(self.prices, self.volumes)
         self.assertEqual(result.final_signal, Signal.HOLD)
@@ -158,10 +166,18 @@ class TestEnsembleStrategy(unittest.TestCase):
         result = self.ensemble.analyze(self.prices, self.volumes)
         self.assertEqual(result.final_signal, Signal.HOLD)
 
-    def test_sma_hold_always_hold(self):
+    def test_sma_hold_lstm_high_confidence_executes(self):
         self.mock_sma.analyze.return_value = self._sma_result(Signal.HOLD)
         self.mock_lstm.is_ready.return_value = True
         self.mock_lstm.predict.return_value = self._lstm_prediction(Signal.BUY, 0.95)
+
+        result = self.ensemble.analyze(self.prices, self.volumes)
+        self.assertEqual(result.final_signal, Signal.BUY)
+
+    def test_sma_hold_lstm_low_confidence_holds(self):
+        self.mock_sma.analyze.return_value = self._sma_result(Signal.HOLD)
+        self.mock_lstm.is_ready.return_value = True
+        self.mock_lstm.predict.return_value = self._lstm_prediction(Signal.BUY, 0.30)
 
         result = self.ensemble.analyze(self.prices, self.volumes)
         self.assertEqual(result.final_signal, Signal.HOLD)
