@@ -68,7 +68,13 @@ class TestOrderManager(unittest.TestCase):
         self.assertEqual(trade.side, "SELL")
         self.assertIsNotNone(trade.pnl)
 
-    def test_sell_signal_without_position_ignored(self):
+    def test_sell_signal_without_position_sells_existing_balance(self):
+        trade = self.manager.process_signal(Signal.SELL, 50000.0)
+        self.assertIsNotNone(trade)
+        self.assertEqual(trade.side, "SELL")
+
+    def test_sell_signal_without_position_no_balance_ignored(self):
+        self.mock_client.get_account_balance.return_value = 0.0
         trade = self.manager.process_signal(Signal.SELL, 50000.0)
         self.assertIsNone(trade)
 

@@ -28,6 +28,8 @@ class Position:
 class OrderManager:
     """Gestiona la ejecución de órdenes y el seguimiento de posiciones."""
 
+    SELL_COOLDOWN_SECONDS = 120  # Esperar 2 min entre ventas de balance existente
+
     def __init__(
         self,
         binance_client: BinanceClient,
@@ -38,6 +40,7 @@ class OrderManager:
         self._repo = trade_repo
         self._config = config
         self._position: Optional[Position] = None
+        self._last_sell_time: float = 0
 
     @property
     def position(self) -> Optional[Position]:
@@ -53,7 +56,76 @@ class OrderManager:
             return self._open_position(current_price)
         elif signal == Signal.SELL and self.has_position:
             return self._close_position(current_price, reason="Señal SELL")
+        elif signal == Signal.SELL and not self.has_position:
+            return self._sell_existing_balance(current_price)
         return None
+
+    def _sell_existing_balance(self, price: float) -> Optional[Trade]:
+        """Vende balance existente del activo base (sin posición tracked)."""
+        import time
+        now = time.time()
+        if now - self._last_sell_time < self.SELL_COOLDOWN_SECONDS:
+            return None
+
+        base_asset = self._config.symbol.replace("USDT", "")
+        try:
+            balance = self._client.get_account_balance(base_asset)
+        except Exception:
+            return None
+
+        if balance <= 0:
+            return None
+
+        sell_pct = self._config.position_size_pct
+        raw_qty = balance * sell_pct
+        quantity = self._adjust_quantity(raw_qty)
+
+        if quantity <= 0:
+            return None
+
+        logger.info(
+            "Vendiendo balance existente: %.6f %s @ %.2f",
+            quantity, base_asset, price,
+        )
+
+        if not self._config.dry_run:
+            try:
+                self._client.place_market_order(
+                    symbol=self._config.symbol,
+                    side="SELL",
+                    quantity=quantity,
+                )
+            except Exception as e:
+                logger.error("Error al vender balance existente: %s", e)
+                return None
+
+        trade = Trade(
+            id=None,
+            timestamp=now_utc_iso(),
+            symbol=self._config.symbol,
+            side="SELL",
+            price=price,
+            quantity=quantity,
+            order_type="MARKET",
+            status="FILLED",
+        )
+        saved_trade = self._repo.create(trade)
+        self._last_sell_time = now
+        logger.info("Balance vendido: %s", saved_trade)
+        return saved_trade
+
+    def _adjust_quantity(self, raw_qty: float) -> float:
+        """Ajusta la cantidad a la precisión del par."""
+        try:
+            info = self._client.get_symbol_info(self._config.symbol)
+            for f in info.get("filters", []):
+                if f["filterType"] == "LOT_SIZE":
+                    step_size = float(f["stepSize"])
+                    precision = int(round(-math.log10(step_size)))
+                    return math.floor(raw_qty * 10**precision) / 10**precision
+        except Exception as e:
+            logger.warning("No se pudo obtener precisión: %s", e)
+        return math.floor(raw_qty * 1e6) / 1e6
 
     def check_stop_loss_take_profit(self, current_price: float) -> Optional[Trade]:
         """Verifica si se debe cerrar la posición por SL/TP."""
@@ -182,13 +254,4 @@ class OrderManager:
     def _calculate_quantity(self, usdt_amount: float, price: float) -> float:
         """Calcula la cantidad ajustada a la precisión del par."""
         raw_qty = usdt_amount / price
-        try:
-            info = self._client.get_symbol_info(self._config.symbol)
-            for f in info.get("filters", []):
-                if f["filterType"] == "LOT_SIZE":
-                    step_size = float(f["stepSize"])
-                    precision = int(round(-math.log10(step_size)))
-                    return math.floor(raw_qty * 10**precision) / 10**precision
-        except Exception as e:
-            logger.warning("No se pudo obtener precisión, usando 6 decimales: %s", e)
-        return math.floor(raw_qty * 1e6) / 1e6
+        return self._adjust_quantity(raw_qty)
