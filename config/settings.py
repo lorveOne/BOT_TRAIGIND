@@ -35,7 +35,7 @@ class TradingConfig:
     stop_loss_pct: float = 0.02
     take_profit_pct: float = 0.04
     position_size_pct: float = 0.10
-    dry_run: bool = True
+    dry_run: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,24 @@ class AppConfig:
     dashboard_refresh_seconds: int = 5
 
 
+@dataclass(frozen=True)
+class LstmConfig:
+    """Configuración de la red neuronal LSTM."""
+
+    enabled: bool = True
+    sequence_length: int = 60
+    lstm_units: int = 64
+    num_layers: int = 2
+    epochs: int = 50
+    batch_size: int = 32
+    confidence_threshold: float = 0.70
+    training_candles: int = 4320  # ~6 meses de velas 1h
+    model_dir: str = str(BASE_DIR / "models" / "trained")
+    retrain_on_startup: bool = False
+
+
 # Instancias globales inmutables
 BINANCE_CONFIG = BinanceConfig()
 TRADING_CONFIG = TradingConfig()
 APP_CONFIG = AppConfig()
+LSTM_CONFIG = LstmConfig()

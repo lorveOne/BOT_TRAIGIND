@@ -45,6 +45,19 @@ class DataFetcher:
         )
         return [float(k[4]) for k in klines]  # index 4 = close price
 
+    def get_closing_prices_and_volumes(
+        self, limit: int = 100
+    ) -> tuple[list[float], list[float]]:
+        """Obtiene precios de cierre y volúmenes de las últimas velas."""
+        klines = self._client.get_klines(
+            symbol=self._config.symbol,
+            interval=self._config.interval,
+            limit=limit,
+        )
+        closes = [float(k[4]) for k in klines]
+        volumes = [float(k[5]) for k in klines]
+        return closes, volumes
+
     def start_price_stream(self) -> None:
         """Inicia el WebSocket para recibir precios en tiempo real."""
         try:

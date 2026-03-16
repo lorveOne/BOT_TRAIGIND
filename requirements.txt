@@ -1,2 +1,5 @@
 python-binance>=1.0.19
 python-dotenv>=1.0.0
+tensorflow>=2.15.0
+scikit-learn>=1.4.0
+numpy>=1.26.0

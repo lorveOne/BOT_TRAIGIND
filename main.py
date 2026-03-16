@@ -1,4 +1,4 @@
-"""Bot de trading para Binance Testnet con estrategia SMA Crossover."""
+"""Bot de trading para Binance Testnet con estrategia Ensemble (SMA + LSTM)."""
 
 import os
 import signal
@@ -6,11 +6,15 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from config.settings import APP_CONFIG, BINANCE_CONFIG, TRADING_CONFIG
+from config.settings import APP_CONFIG, BINANCE_CONFIG, LSTM_CONFIG, TRADING_CONFIG
 from models.trade import TradeRepository
 from services.binance_client import BinanceClient
 from services.data_fetcher import DataFetcher
+from services.historical_data import HistoricalDataFetcher
+from services.model_trainer import ModelTrainer
 from services.order_manager import OrderManager
+from strategies.ensemble import EnsembleStrategy
+from strategies.lstm_predictor import LstmPredictor
 from strategies.sma_crossover import SmaCrossoverStrategy
 from utils.logger import setup_logger
 
@@ -23,12 +27,19 @@ class TradingBot:
     def __init__(self) -> None:
         self._running = False
         self._trade_repo = TradeRepository(APP_CONFIG.db_path)
+        self._last_ensemble_result = None
 
         self._binance_client = BinanceClient(BINANCE_CONFIG)
         self._data_fetcher = DataFetcher(self._binance_client, TRADING_CONFIG)
-        self._strategy = SmaCrossoverStrategy(
+        self._sma_strategy = SmaCrossoverStrategy(
             short_period=TRADING_CONFIG.sma_short_period,
             long_period=TRADING_CONFIG.sma_long_period,
+        )
+        self._lstm_predictor = LstmPredictor(LSTM_CONFIG)
+        self._ensemble = EnsembleStrategy(
+            self._sma_strategy,
+            self._lstm_predictor,
+            LSTM_CONFIG.confidence_threshold,
         )
         self._order_manager = OrderManager(
             self._binance_client, self._trade_repo, TRADING_CONFIG
@@ -38,12 +49,17 @@ class TradingBot:
         """Inicia el bot de trading."""
         self._running = True
         logger.info("=" * 60)
-        logger.info("Bot de Trading iniciado")
+        logger.info("Bot de Trading Ensemble (SMA + LSTM)")
         logger.info("Par: %s | Intervalo: %s", TRADING_CONFIG.symbol, TRADING_CONFIG.interval)
         logger.info("SMA: %d/%d", TRADING_CONFIG.sma_short_period, TRADING_CONFIG.sma_long_period)
         logger.info("SL: %.1f%% | TP: %.1f%%", TRADING_CONFIG.stop_loss_pct * 100, TRADING_CONFIG.take_profit_pct * 100)
         logger.info("Modo: %s", "DRY-RUN" if TRADING_CONFIG.dry_run else "LIVE")
+        logger.info("LSTM: %s | Confianza min: %.0f%%", "ON" if LSTM_CONFIG.enabled else "OFF", LSTM_CONFIG.confidence_threshold * 100)
         logger.info("=" * 60)
+
+        # Entrenar o cargar modelo LSTM
+        if LSTM_CONFIG.enabled:
+            self._init_lstm()
 
         self._data_fetcher.start_price_stream()
 
@@ -67,6 +83,20 @@ class TradingBot:
         finally:
             self.stop()
 
+    def _init_lstm(self) -> None:
+        """Inicializa el modelo LSTM (carga o entrena)."""
+        historical_fetcher = HistoricalDataFetcher(
+            self._binance_client, TRADING_CONFIG
+        )
+        trainer = ModelTrainer(
+            self._lstm_predictor, historical_fetcher, LSTM_CONFIG
+        )
+        success = trainer.train_or_load()
+        if success:
+            logger.info("Modelo LSTM listo")
+        else:
+            logger.warning("LSTM no disponible, operando solo con SMA")
+
     def stop(self) -> None:
         """Detiene el bot de forma ordenada."""
         self._running = False
@@ -76,8 +106,12 @@ class TradingBot:
     def _tick(self) -> None:
         """Ejecuta un ciclo de análisis y trading."""
         try:
-            prices = self._data_fetcher.get_closing_prices(
-                limit=TRADING_CONFIG.sma_long_period + 10
+            data_limit = max(
+                TRADING_CONFIG.sma_long_period + 10,
+                LSTM_CONFIG.sequence_length + 20,
+            )
+            prices, volumes = self._data_fetcher.get_closing_prices_and_volumes(
+                limit=data_limit
             )
             if not prices:
                 logger.warning("No se pudieron obtener precios")
@@ -90,9 +124,12 @@ class TradingBot:
             # Verificar stop-loss / take-profit
             self._order_manager.check_stop_loss_take_profit(current_price)
 
-            # Analizar estrategia
-            result = self._strategy.analyze(prices)
-            self._order_manager.process_signal(result.signal, current_price)
+            # Analizar con ensemble (SMA + LSTM)
+            ensemble_result = self._ensemble.analyze(prices, volumes)
+            self._last_ensemble_result = ensemble_result
+            self._order_manager.process_signal(
+                ensemble_result.final_signal, current_price
+            )
 
         except Exception as e:
             logger.error("Error en ciclo de trading: %s", e)
@@ -113,7 +150,7 @@ class TradingBot:
         mode = "DRY-RUN" if TRADING_CONFIG.dry_run else "LIVE"
 
         print("=" * 60)
-        print(f"  TRADING BOT - {TRADING_CONFIG.symbol} [{mode}]")
+        print(f"  TRADING BOT ENSEMBLE - {TRADING_CONFIG.symbol} [{mode}]")
         print(f"  {now}")
         print("=" * 60)
         print(f"  Precio actual:  ${price:,.2f}")
@@ -123,6 +160,26 @@ class TradingBot:
             print(f"  Balance USDT:   ${usdt_balance:,.2f}")
         except Exception:
             print("  Balance USDT:   N/A")
+
+        print("-" * 60)
+        print("  ESTRATEGIA ENSEMBLE (SMA + LSTM):")
+
+        result = self._last_ensemble_result
+        if result:
+            sma = result.sma_result
+            print(f"    SMA{TRADING_CONFIG.sma_short_period}: {sma.sma_short:,.2f} | SMA{TRADING_CONFIG.sma_long_period}: {sma.sma_long:,.2f} | Senal: {sma.signal.value}")
+
+            lstm = result.lstm_prediction
+            if lstm:
+                conf_bar = "#" * int(lstm.confidence * 10) + "-" * (10 - int(lstm.confidence * 10))
+                print(f"    LSTM: {lstm.direction.value} | Confianza: [{conf_bar}] {lstm.confidence:.1%}")
+            else:
+                print("    LSTM: No disponible")
+
+            print(f"    >>> DECISION: {result.final_signal.value}")
+            print(f"    Razon: {result.reason}")
+        else:
+            print("    Esperando primer analisis...")
 
         print("-" * 60)
 
