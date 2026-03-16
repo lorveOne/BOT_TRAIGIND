@@ -29,13 +29,17 @@ class TradingConfig:
     """Parámetros de la estrategia de trading."""
 
     symbol: str = "BTCUSDT"
-    interval: str = "1h"
-    sma_short_period: int = 20
-    sma_long_period: int = 50
+    interval: str = "1m"
+    sma_short_period: int = 5
+    sma_long_period: int = 10
     stop_loss_pct: float = 0.02
     take_profit_pct: float = 0.04
     position_size_pct: float = 0.10
     dry_run: bool = False
+
+
+# Configuración multi-par
+MULTI_PAIR_SYMBOLS = ["BTCUSDT", "PAXGUSDT", "EURUSDT"]
 
 
 @dataclass(frozen=True)
@@ -57,10 +61,10 @@ class LstmConfig:
     num_layers: int = 2
     epochs: int = 50
     batch_size: int = 32
-    confidence_threshold: float = 0.70
-    training_candles: int = 4320  # ~6 meses de velas 1h
+    confidence_threshold: float = 0.01
+    training_candles: int = 4320
     model_dir: str = str(BASE_DIR / "models" / "trained")
-    retrain_on_startup: bool = False
+    retrain_on_startup: bool = True
 
 
 # Instancias globales inmutables

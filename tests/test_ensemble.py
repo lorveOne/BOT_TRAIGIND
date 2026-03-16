@@ -68,7 +68,7 @@ class TestBuildFeatures(unittest.TestCase):
         closes = [float(x) for x in range(100)]
         volumes = [float(x * 10) for x in range(100)]
         features, labels = build_features(closes, volumes)
-        self.assertEqual(features.shape[1], 4)  # 4 features
+        self.assertEqual(features.shape[1], 10)  # 10 features
         self.assertEqual(len(features), len(labels))
 
     def test_labels_binary(self):
